@@ -94,9 +94,15 @@ task runBackend (type: JavaExec) {
 // Start up an analysis local backend and ask it to shut down immediately.
 // This is used to check in the automated build that the JAR is usable in end-to-end tests before we keep it.
 // Create a configuration properties file (by copying the template) before running this task.
+<<<<<<< HEAD
 task testRunnable(type: JavaExec) {
     dependsOn(build)
     classpath(sourceSets.main.runtimeClasspath)
+=======
+task testShadowJarRunnable(type: JavaExec) {
+    dependsOn(shadowJar)
+    classpath(shadowJar.archiveFile.get())
+>>>>>>> c35f6e2a (Update build env)
     mainClass = 'com.conveyal.analysis.BackendMain'
     jvmArgs("-Dconveyal.immediate.shutdown=true")
 }
