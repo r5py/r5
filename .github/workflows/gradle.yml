@@ -33,14 +33,11 @@ jobs:
         fetch-depth: 0
     # Java setup step completes very fast, no need to run in a preconfigured docker container.
     - name: Set up JDK 11
-      uses: actions/setup-java@v1
+      uses: actions/setup-java@v3
       with:
         java-version: 11
-    - uses: actions/cache@v1
-      id: cache
-      with:
-        path: ~/.gradle/caches
-        key: gradle-caches
+        distribution: temurin
+        cache: 'gradle'
     - name: Show version string
       run: gradle -q printVersion | head -n1
     - name: Build and Test
@@ -54,4 +51,5 @@ jobs:
       env:
         GITHUB_PACKAGE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
       run: gradle publish
