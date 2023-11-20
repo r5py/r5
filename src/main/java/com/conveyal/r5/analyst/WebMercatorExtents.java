@@ -1,5 +1,6 @@
 package com.conveyal.r5.analyst;
 
+import com.conveyal.analysis.AnalysisServerException;
 import com.conveyal.r5.analyst.cluster.AnalysisWorkerTask;
 import org.geotools.geometry.jts.ReferencedEnvelope;
 import org.geotools.referencing.CRS;
@@ -7,24 +8,38 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.opengis.referencing.crs.CoordinateReferenceSystem;
 
+import java.io.Serializable;
 import java.util.Arrays;
 
+import static com.conveyal.r5.analyst.Grid.latToFractionalPixel;
 import static com.conveyal.r5.analyst.Grid.latToPixel;
+import static com.conveyal.r5.analyst.Grid.lonToFractionalPixel;
 import static com.conveyal.r5.analyst.Grid.lonToPixel;
+import static com.conveyal.r5.analyst.Grid.pixelToLat;
+import static com.conveyal.r5.analyst.Grid.pixelToLon;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkElementIndex;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 /**
- * Really we should be embedding one of these in the tasks, grids, etc. to factor out all the common fields.
- * Equals and hashcode are semantic, for use as or within hashtable keys.
+ * Really we should have a field pointing to an instance of this in tasks, grids, etc. to factor out all the common
+ * fields. Equals and hashcode are semantic, for use as or within hashtable keys.
  *
  * TODO may want to distinguish between WebMercatorExtents, WebMercatorGrid (adds lat/lon conversion functions),
  *      and OpportunityGrid (AKA Grid) which adds opportunity counts. These can compose, not necessarily subclass.
  *      Of course they could all be one class, with the opportunity grid nulled out when there is no density.
  */
-public class WebMercatorExtents {
+public class WebMercatorExtents implements Serializable {
+
+    /**
+     * Default Web Mercator zoom level for grids (origin/destination layers, aggregation area masks, etc.).
+     * Level 10 is probably ideal but will quadruple calculation relative to 9.
+     */
+    public static final int DEFAULT_ZOOM = 9;
+    public static final int MIN_ZOOM = 9;
+    public static final int MAX_ZOOM = 12;
+    private static final int MAX_GRID_CELLS = 5_000_000;
 
     /** The pixel number of the westernmost pixel (smallest x value). */
     public final int west;
@@ -44,12 +59,17 @@ public class WebMercatorExtents {
     /** Web mercator zoom level. */
     public final int zoom;
 
+    /**
+     * All factory methods or constructors for WebMercatorExtents should eventually call this constructor,
+     * as it will enforce size constraints that prevent straining or stalling the system.
+     */
     public WebMercatorExtents (int west, int north, int width, int height, int zoom) {
         this.west = west;
         this.north = north;
         this.width = width;
         this.height = height;
         this.zoom = zoom;
+        checkGridSize();
     }
 
     /**
@@ -84,7 +104,17 @@ public class WebMercatorExtents {
         }
     }
 
-    /** Create the minimum-size immutable WebMercatorExtents containing both this one and the other one. */
+    public static int parseZoom(String zoomString) {
+        int zoom = (zoomString == null) ? DEFAULT_ZOOM : Integer.parseInt(zoomString);
+        checkArgument(zoom >= MIN_ZOOM && zoom <= MAX_ZOOM);
+        return zoom;
+    }
+
+    /**
+     * Create the minimum-size immutable WebMercatorExtents containing both this one and the other one.
+     * Note that WebMercatorExtents fields are immutable, and this method does not modify the instance in place.
+     * It creates a new instance. This behavior differs from GeoTools / JTS Envelopes.
+     */
     public WebMercatorExtents expandToInclude (WebMercatorExtents other) {
         checkState(this.zoom == other.zoom, "All grids supplied must be at the same zoom level.");
         final int thisEast = this.west + this.width;
@@ -100,23 +130,94 @@ public class WebMercatorExtents {
         return new WebMercatorExtents(outWest, outNorth, outWidth, outHeight, this.zoom);
     }
 
+    /**
+     * Construct a WebMercatorExtents that contains all the points inside the supplied WGS84 envelope.
+     * The logic here is designed to handle the case where the edges of the WGS84 envelope exactly coincide with the
+     * edges of the web Mercator grid. For example, if the right edge is exactly on the border of pixels with x
+     * number 3 and 4, and the left edge is exactly on the border of pixels with x number 2 and 3, the resulting
+     * WebMercatorExtents should only include pixels with x number 3. This case arises when the WGS84 envelope was
+     * itself derived from a block of web Mercator pixels.
+     *
+     * Note that this does not handle numerical instability or imprecision in repeated floating point calculations on
+     * envelopes, where WGS84 coordinates are intended to yield exact integer web Mercator coordinates but do not.
+     * Such imprecision is handled by wrapper factory methods (by shrinking or growing the envelope by some epsilon).
+     * The real solution would be to always specify origin grids in integer form, but our current API does not allow this.
+     */
     public static WebMercatorExtents forWgsEnvelope (Envelope wgsEnvelope, int zoom) {
-        /*
-          The grid extent is computed from the points. If the cell number for the right edge of the grid is rounded
-          down, some points could fall outside the grid. `latToPixel` and `lonToPixel` naturally truncate down, which is
-          the correct behavior for binning points into cells but means the grid is (almost) always 1 row too
-          narrow/short, so we add 1 to the height and width when a grid is created in this manner. The exception is
-          when the envelope edge lies exactly on a pixel boundary. For this reason we should probably not produce WGS
-          Envelopes that exactly align with pixel edges, but they should instead surround the points at pixel centers.
-          Note also that web Mercator coordinates increase from north to south, so minimum latitude is maximum y.
-          TODO maybe use this method when constructing Grids. Grid (int zoom, Envelope envelope)
-         */
+        // Conversion of WGS84 to web Mercator pixels truncates intra-pixel coordinates toward the origin (northwest).
+        // Note that web Mercator coordinates increase from north to south, so maximum latitude is minimum Mercator y.
         int north = latToPixel(wgsEnvelope.getMaxY(), zoom);
         int west = lonToPixel(wgsEnvelope.getMinX(), zoom);
-        int height = (latToPixel(wgsEnvelope.getMinY(), zoom) - north) + 1; // minimum height is 1
-        int width = (lonToPixel(wgsEnvelope.getMaxX(), zoom) - west) + 1; // minimum width is 1
-        WebMercatorExtents webMercatorExtents = new WebMercatorExtents(west, north, width, height, zoom);
-        return webMercatorExtents;
+        // Find width and height in whole pixels, handling the case where the right envelope edge is on a pixel edge.
+        int height = (int) Math.ceil(latToFractionalPixel(wgsEnvelope.getMinY(), zoom) - north);
+        int width = (int) Math.ceil(lonToFractionalPixel(wgsEnvelope.getMaxX(), zoom) - west);
+        // These extents are constructed to contain some objects, and they have integer sizes (whole Mercator pixels).
+        // Therefore they should always have positive nonzero integer width and height.
+        checkState(width >= 1, "Web Mercator extents should always have a width of one or more.");
+        checkState(height >= 1, "Web Mercator extents should always have a height of one or more.");
+        return new WebMercatorExtents(west, north, width, height, zoom);
+    }
+
+    /**
+     * For function definitions below to work, this epsilon must be (significantly) less than half the height or
+     * width of a web Mercator pixel at the highest zoom level and highest latitude allowed by the system.
+     * Current value is about 1 meter north-south, but east-west distance is higher at higher latitudes.
+     */
+    private static final double WGS_EPSILON = 0.00001;
+
+    /**
+     * Wrapper to forWgsEnvelope where the envelope is trimmed uniformly by only a meter or two in each direction. This
+     * helps handle lack of numerical precision where floating point math is intended to yield integers and envelopes
+     * that exactly line up with Mercator grid edges (though the latter is also handled by the main constructor).
+     *
+     * Without this trimming, when receiving an envelope that's supposed to lie on integer web Mercator pixel
+     * boundaries, a left or top edge coordinate may end up the tiniest bit below the intended integer and be
+     * truncated all the way down to the next lower pixel number. A bottom or right edge coordinate that ends up a tiny
+     * bit above the intended integer will tack a whole row of pixels onto the grid. Neither of these are horrible in
+     * isolation (the grid is just one pixel bigger than absolutely necessary) but when applied repeatedly, as when
+     * basing one analysis on another in a chain, the grid will grow larger and larger, yielding mismatched result grids.
+     *
+     * I originally attempted to handle this with lat/lonToPixel functions that would snap to pixel edges, but the
+     * snapping needs to pull in different directions on different edges of the envelope. Just transforming the envelope
+     * by trimming it slightly is simpler and has the intended effect.
+     *
+     * Trimming is not appropriate in every use case. If you have an envelope that's a tight fit around a set of points
+     * (opportunities) and the left edge of that envelope is within the trimming distance of a web Mercator pixel edge,
+     * those opportunities will be outside the resulting WebMercatorExtents. When preparing grids intended to contain
+     * a set of points, it is probably better to deal with numerical imprecision by expanding the envelope slightly
+     * instead of contracting it. A separate method is supplied for this purpose.
+     */
+    public static WebMercatorExtents forTrimmedWgsEnvelope (Envelope wgsEnvelope, int zoom) {
+        checkArgument(wgsEnvelope.getWidth() > 3 * WGS_EPSILON, "Envelope is too narrow.");
+        checkArgument(wgsEnvelope.getHeight() > 3 * WGS_EPSILON, "Envelope is too short.");
+        // Shrink a protective copy of the envelope slightly. Note the negative sign, this is shrinking the envelope.
+        wgsEnvelope = wgsEnvelope.copy();
+        wgsEnvelope.expandBy(-WGS_EPSILON);
+        return WebMercatorExtents.forWgsEnvelope(wgsEnvelope, zoom);
+    }
+
+    /**
+     * The opposite of forTrimmedWgsEnvelope: makes the envelope a tiny bit bigger before constructing the extents.
+     * This helps deal with numerical imprecision where we want to be sure all points within a supplied envelope will
+     * fall inside cells of the resulting web Mercator grid.
+     */
+    public static WebMercatorExtents forBufferedWgsEnvelope (Envelope wgsEnvelope, int zoom) {
+        // Expand a protective copy of the envelope slightly.
+        wgsEnvelope = wgsEnvelope.copy();
+        wgsEnvelope.expandBy(WGS_EPSILON);
+        return WebMercatorExtents.forWgsEnvelope(wgsEnvelope, zoom);
+    }
+
+    /**
+     * Produces a new Envelope in WGS84 coordinates that tightly encloses the pixels of this WebMercatorExtents.
+     * The edges of that Envelope will run exactly down the borders between neighboring web Mercator pixels.
+     */
+    public Envelope toWgsEnvelope () {
+        double westLon = pixelToLon(west, zoom);
+        double northLat = pixelToLat(north, zoom);
+        double eastLon = pixelToLon(west + width, zoom);
+        double southLat = pixelToLat(north + height, zoom);
+        return new Envelope(westLon, eastLon, southLat, northLat);
     }
 
     @Override
@@ -205,6 +306,36 @@ public class WebMercatorExtents {
         double xMeters = ((xPixel / worldWidthPixels) - 0.5) * worldWidthMeters;
         double yMeters = (0.5 - (yPixel / worldWidthPixels)) * worldWidthMeters; // flip y axis
         return new Coordinate(xMeters, yMeters);
+    }
+
+    /**
+     * Users may create very large grids in various ways. For example, by setting large custom analysis bounds or by
+     * uploading spatial data sets with very large extents. This method checks some limits on the zoom level and total
+     * number of cells to avoid straining or stalling the system.
+     *
+     * The fields of WebMercatorExtents are immutable and are not typically deserialized from incoming HTTP API
+     * requests. As all instances are created through a constructor, so we can perform this check every time a grid is
+     * created. If we do eventually deserialize these from HTTP API requests, we'll have to call the check explicitly.
+     * The Grid class internally uses a WebMercatorExtents field, so dimensions are also certain to be checked while
+     * constructing a Grid.
+     *
+     * An analysis destination grid might become problematic at a smaller size than an opportunity data grid. But until
+     * we have a reason to distinguish different situations, MAX_GRID_CELLS is defined as a constant in this class.
+     * If needed, we can make the max size a method parameter and pass in different limits in different contexts.
+     */
+    public void checkGridSize () {
+        if (this.zoom < MIN_ZOOM || this.zoom > MAX_ZOOM) {
+            throw AnalysisServerException.badRequest(String.format(
+                    "Requested zoom (%s) is outside valid range (%s - %s)", this.zoom, MIN_ZOOM, MAX_ZOOM
+            ));
+        }
+        if (this.height * this.width > MAX_GRID_CELLS) {
+            throw AnalysisServerException.badRequest(String.format(
+                    "Requested number of destinations (%s) exceeds limit (%s). " +
+                            "Set smaller custom geographic bounds or a lower zoom level.",
+                    this.height * this.width, MAX_GRID_CELLS
+            ));
+        }
     }
 
 }

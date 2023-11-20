@@ -28,9 +28,6 @@ import java.util.stream.Collectors;
  * sends/forwards to R5 workers (see {@link AnalysisWorkerTask}), though it has many of the same fields.
  */
 public class AnalysisRequest {
-    private static int MIN_ZOOM = 9;
-    private static int MAX_ZOOM = 12;
-    private static int MAX_GRID_CELLS = 5_000_000;
 
     /**
      * These three IDs are redundant, and just help reduce the number of database lookups necessary.
@@ -165,6 +162,21 @@ public class AnalysisRequest {
     public ChaosParameters injectFault;
 
     /**
+     * Whether to include the number of opportunities reached during each minute of travel in results sent back
+     * to the broker. Requires both an origin and destination pointset to be specified, and in the case of regional
+     * analyses the origins must be non-gridded, and results will be collated to CSV.
+     * It should be possible to enable regional results for gridded origins as well.
+     */
+    public boolean includeTemporalDensity = false;
+
+    /**
+     * If this is set to a value above zero, report the amount of time needed to reach the given number of
+     * opportunities from this origin (known technically as "dual accessibility").
+     */
+    public int dualAccessibilityThreshold = 0;
+
+
+    /**
      * Create the R5 `Scenario` from this request.
      */
     public Scenario createScenario (UserPermissions userPermissions) {
@@ -204,10 +216,7 @@ public class AnalysisRequest {
         task.maxFare = maxFare;
         task.inRoutingFareCalculator = inRoutingFareCalculator;
 
-        // TODO define class with static factory function WebMercatorGridBounds.fromLatLonBounds().
-        //      Also include getIndex(x, y), getX(index), getY(index), totalTasks()
-        WebMercatorExtents extents = WebMercatorExtents.forWgsEnvelope(bounds.envelope(), zoom);
-        checkGridSize(extents);
+        WebMercatorExtents extents = WebMercatorExtents.forTrimmedWgsEnvelope(bounds.envelope(), zoom);
         task.height = extents.height;
         task.north = extents.north;
         task.west = extents.west;
@@ -269,21 +278,9 @@ public class AnalysisRequest {
                 throw new IllegalArgumentException("Must be admin user to inject faults.");
             }
         }
-    }
 
-    private static void checkGridSize (WebMercatorExtents extents) {
-        if (extents.zoom < MIN_ZOOM || extents.zoom > MAX_ZOOM) {
-            throw AnalysisServerException.badRequest(String.format(
-                    "Requested zoom (%s) is outside valid range (%s - %s)", extents.zoom, MIN_ZOOM, MAX_ZOOM
-            ));
-        }
-        if (extents.height * extents.width > MAX_GRID_CELLS) {
-            throw AnalysisServerException.badRequest(String.format(
-                    "Requested number of destinations (%s) exceeds limit (%s). " +
-                            "Set smaller custom geographic bounds or a lower zoom level.",
-                            extents.height * extents.width, MAX_GRID_CELLS
-            ));
-        }
+        task.includeTemporalDensity = includeTemporalDensity;
+        task.dualAccessibilityThreshold = dualAccessibilityThreshold;
     }
 
     private EnumSet<LegMode> getEnumSetFromString (String s) {
