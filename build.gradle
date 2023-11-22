@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
     id 'application'
     id 'maven-publish'
     id 'com.palantir.git-version' version '2.0.0'
@@ -29,6 +30,10 @@ jar {
             'Implementation-Vendor': 'Conveyal LLC',
             'Implementation-Version': project.version
     }
+}
+
+shadowJar {
+    mergeServiceFiles()
 }
 
 // Allow reflective access by ObjectDiffer to normally closed Java internals. Used for round-trip testing serialization.
@@ -98,6 +103,13 @@ task testRunnable(type: JavaExec) {
     dependsOn(build)
     classpath(sourceSets.main.runtimeClasspath)
     mainClass = 'com.conveyal.analysis.BackendMain'
+    jvmArgs("-Dconveyal.immediate.shutdown=true")
+}
+
+task testShadowJarRunnable(type: JavaExec) {
+    dependsOn(shadowJar)
+    classpath(shadowJar.archiveFile.get())
+    main("com.conveyal.analysis.BackendMain")
     jvmArgs("-Dconveyal.immediate.shutdown=true")
 }
 
