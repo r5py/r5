@@ -269,4 +269,3 @@ dependencies {
     testImplementation('org.jfree:jfreechart:1.5.1')
 
 }
-
