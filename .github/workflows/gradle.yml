@@ -53,4 +53,7 @@ jobs:
         GITHUB_PACKAGE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       continue-on-error: true
-      run: gradle publish --debug
+      run: gradle publish
+permissions:
+  contents: read
+  packages: write
