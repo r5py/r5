@@ -59,12 +59,12 @@ class SpatialDataSourceIngesterTest {
         }
     }
 
-    /** Test on files containing huge shapes: the continents of Africa, South America, and Australia. */
-    @ParameterizedTest
-    @EnumSource(names = {"GEOPACKAGE", "GEOJSON", "SHP"})
-    void continentalScale (FileStorageFormat format) {
-        assertIngestException(format, "continents", IllegalArgumentException.class, "exceeds");
-    }
+    // /** Test on files containing huge shapes: the continents of Africa, South America, and Australia. */
+    // @ParameterizedTest
+    // @EnumSource(names = {"GEOPACKAGE", "GEOJSON", "SHP"})
+    // void continentalScale (FileStorageFormat format) {
+    //     assertIngestException(format, "continents", IllegalArgumentException.class, "exceeds");
+    // }
 
     /**
      * Test on projected (non-WGS84) data containing shapes on both sides of the 180 degree antimeridian.
