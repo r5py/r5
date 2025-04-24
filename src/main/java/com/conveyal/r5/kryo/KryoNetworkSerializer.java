@@ -130,12 +130,14 @@ public abstract class KryoNetworkSerializer {
         byte[] header = new byte[HEADER.length];
         input.read(header, 0, header.length);
         if (!Arrays.equals(HEADER, header)) {
+            input.close();
             throw new RuntimeException("Unrecognized file header. Is this an R5 Kryo network?");
         }
         String formatVersion = kryo.readObject(input, String.class);
         String commit = kryo.readObject(input, String.class);
         LOG.info("Loading network from file format version {}, written by R5 commit {}", formatVersion, commit);
         if (!NETWORK_FORMAT_VERSION.equals(formatVersion)) {
+            input.close();
             throw new RuntimeException(
                 String.format("File format version is %s, this R5 requires %s", formatVersion, NETWORK_FORMAT_VERSION)
             );
